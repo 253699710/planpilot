@@ -25,13 +25,12 @@ def fix_path(path):
 def run_fd_translator(domain, instance):
     binary_path = fix_path("translate/translate.py")
     python_exec = sys.executable  # Uses the currently running Python interpreter
-    command = [
-        python_exec,
-        binary_path,
-        "--keep-unimportant-variables",
-        domain,
-        instance,
-    ]
+    command = [python_exec, binary_path]
+    # Local patch: translator pruning is the default; PLANPILOT_TRANSLATE_ORIGINAL=1
+    # restores the keep-flags to match the unpruned SAT export.
+    if os.environ.get("PLANPILOT_TRANSLATE_ORIGINAL", "0") == "1":
+        command.append("--keep-unimportant-variables")
+    command += [domain, instance]
     time = utils.get_elapsed_time()
     process = Popen(command, stdout=PIPE, stderr=PIPE, text=True)
     stdout, stderr = process.communicate()
