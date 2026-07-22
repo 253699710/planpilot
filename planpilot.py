@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import os
 import select
+import shutil
 import sys
 import utils
 
@@ -126,6 +127,24 @@ def run_fasb(lp, horizon, script=None):
     if script:
         full_script_path = fix_path(script)
         command.append(full_script_path)
+
+    if script:
+        # bin/fasb_interpreter is built locally (needs the interpreter Cargo
+        # feature) against a recent glibc/libstdc++; on systems with an older
+        # system glibc (e.g. HPC login nodes), run it inside a container that
+        # has a matching glibc instead. Opt-in: only if both apptainer and the
+        # container image are present; otherwise falls back to the direct call
+        # above (which is what already works on machines with a recent glibc).
+        sif_path = fix_path("bin/ubuntu2404.sif")
+        apptainer = shutil.which("apptainer") or shutil.which("singularity")
+        if apptainer and os.path.exists(sif_path):
+            binds = {os.path.dirname(os.path.abspath(lp)),
+                     os.path.dirname(os.path.abspath(full_script_path)),
+                     os.path.expanduser("~")}
+            bind_args = []
+            for b in binds:
+                bind_args += ["--bind", b]
+            command = [apptainer, "exec", *bind_args, sif_path] + command
 
     if args.dry:
         logging.info("Dry startup...")
