@@ -138,9 +138,16 @@ def run_fasb(lp, horizon, script=None):
         sif_path = fix_path("bin/ubuntu2404.sif")
         apptainer = shutil.which("apptainer") or shutil.which("singularity")
         if apptainer and os.path.exists(sif_path):
-            binds = {os.path.dirname(os.path.abspath(lp)),
-                     os.path.dirname(os.path.abspath(full_script_path)),
-                     os.path.expanduser("~")}
+            # realpath, not abspath: on systems where the home directory is a
+            # symlink into another filesystem (e.g. /home/... -> /pfs/data6/...
+            # on bwUniCluster), binding the symlinked path leaves the real one
+            # unmounted, and apptainer aborts with
+            #   FATAL: stat .../bin/fasb_interpreter: no such file or directory
+            # The binary's own directory has to be bound for the same reason.
+            binds = {os.path.dirname(os.path.realpath(lp)),
+                     os.path.dirname(os.path.realpath(full_script_path)),
+                     os.path.dirname(os.path.realpath(binary_path)),
+                     os.path.realpath(os.path.expanduser("~"))}
             bind_args = []
             for b in binds:
                 bind_args += ["--bind", b]
