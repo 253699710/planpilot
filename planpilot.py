@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import logging
 import os
+import pty
 import select
 import shutil
 import sys
+import termios
 import utils
 
 from subprocess import Popen, PIPE
@@ -171,66 +173,55 @@ def run_fasb(lp, horizon, script=None):
         if stderr:
             print(stderr, file=sys.stderr, end="")
     else:
+        # Give fasb a terminal, so it flushes each interactive response and
+        # its ready prompt. TextIO.readline combined with select on a pipe can
+        # strand already-buffered lines and hang after a large answer.
+        master_fd, slave_fd = pty.openpty()
+        attrs = termios.tcgetattr(slave_fd)
+        attrs[3] &= ~termios.ECHO
+        termios.tcsetattr(slave_fd, termios.TCSANOW, attrs)
         process = Popen(
             command,
-            stdout=PIPE,
-            stdin=PIPE,
-            stderr=PIPE,
-            text=True,
-            universal_newlines=True,
-            bufsize=1,
+            stdout=slave_fd,
+            stdin=slave_fd,
+            stderr=slave_fd,
         )
+        os.close(slave_fd)
 
         logging.info(
             "Starting fasb... To quit the interactive mode, use the command ':q'."
         )
 
         # Set up the file descriptors for select
-        input_stream = sys.stdin
-        output_stream = process.stdout
-        error_stream = process.stderr
-
         prompts = 0
         try:
-            terminated = False
-            while not terminated:
-                # Use select to wait for input/output readiness
-                reads, _, _ = select.select(
-                    [input_stream, output_stream, error_stream], [], []
-                )
-                for stream in reads:
-                    if stream == output_stream:
-                        # Read from the subprocess's output
-                        output = process.stdout.readline()
-                        if output:  # If there's output, print it
-                            print(output.strip())
-                        else:
-                            # If no output, the process might have closed
-                            logging.info("Terminating fasb.")
-                            logging.info(f"Number of prompts: {prompts}")
-                            terminated = True
-                            break
-
-                    elif stream == input_stream:
-                        # Get user input
-                        user_input = input()
-                        # Send input to the subprocess
-                        process.stdin.write(user_input + "\n")
-                        process.stdin.flush()  # Ensure it's sent immediately
-                        prompts = prompts + 1
-
-                    elif stream == error_stream:
-                        # Read from the subprocess's error stream if needed
-                        error_output = process.stderr.readline()
-                        if error_output:
-                            print("Error:", error_output.strip())
-                            terminated = True
+            inputs = [sys.stdin.fileno(), master_fd]
+            while master_fd in inputs:
+                reads, _, _ = select.select(inputs, [], [])
+                if master_fd in reads:
+                    try:
+                        data = os.read(master_fd, 65536)
+                    except OSError:
+                        break
+                    if not data:
+                        break
+                    os.write(sys.stdout.fileno(), data)
+                if sys.stdin.fileno() in reads:
+                    data = os.read(sys.stdin.fileno(), 65536)
+                    if not data:
+                        inputs.remove(sys.stdin.fileno())
+                        os.write(master_fd, b":q\n")
+                    else:
+                        os.write(master_fd, data)
+                        prompts += data.count(b"\n")
 
         except KeyboardInterrupt:
             # Handle Ctrl+C to exit cleanly
             print("Exiting...")
-            process.stdin.write("exit()\n")  # Send exit command to the subprocess
-            process.stdin.flush()
+            os.write(master_fd, b":q\n")
+        finally:
+            os.close(master_fd)
+            process.wait()
 
     logging.info(f"fasb time: {utils.get_elapsed_time() - time:.2f}s")
 
